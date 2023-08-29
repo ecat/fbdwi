@@ -1,0 +1,44 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/anaconda
+{
+	"name": "fb_diffusion_release",
+	"build": { 
+		"context": "..",
+		"dockerfile": "../docker/Dockerfile"
+	},
+	// runArgs doesn't like spaces
+	"runArgs": ["--runtime=nvidia", 
+				"--gpus=all",
+				"--shm-size=1g",
+				"--ulimit", "memlock=-1",
+				"--ulimit", "stack=67108864",
+				"-w", "/home/sdkuser/workspace",
+				"-p", "1600-1650:1616"],
+	// specify location of mount in docker container, should match
+	// locations in script called from sonofrecon
+	
+	"workspaceMount": "source=${localWorkspaceFolder},target=/home/sdkuser/workspace,type=bind",
+	"workspaceFolder": "/home/sdkuser/workspace",
+	"mounts": ["source=/bmrNAS/people/pkllee/scans,target=/home/sdkuser/data,type=bind,readonly"],
+	// Features to add to the dev container. More info: https://containers.dev/features.
+	// "features": {},
+
+	// Use 'forwardPorts' to make a list of ports inside the container available locally.
+	// "forwardPorts": [],
+
+	// Use 'postCreateCommand' to run commands after the container is created.
+	// "postCreateCommand": "python --version",
+
+	// Configure tool-specific properties.
+	"customizations": {
+		// Configure properties specific to VS Code
+		"vscode": {
+			"settings": {},
+			"extensions": ["ms-python.python"]
+		}
+	},
+
+	// Uncomment to connect as root instead ONLY USE THIS FOR ROOTLESS DOCKER to enable saving.
+	"remoteUser": "root"
+        // "remoteUser": "sdkuser"
+}
