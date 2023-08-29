@@ -21,8 +21,9 @@ import os, sys
 is_jupyter = hasattr(sys, 'ps1') # https://stackoverflow.com/questions/2356399/tell-if-python-is-in-interactive-mode
 
 from utils import sos, print_and_clear_cupy_memory, whiten, match_device, montage, center_crop, uncenter_crop, print_and_clear_cupy_fft_cache, calculate_adc_map
-from mpflash_recon_functions import gauss_window, triangle_window, pe_to_grid, test_pe_to_grid, walsh_method, reconstruct_phase_navigators, get_diffusion_forward_model
-from mpflash_recon_functions import PhaseNavWeightingType, PhaseNavNormalizationType, EHEScalingType, EHbScalingType, PhaseNavPerVoxelNormalizationType
+from mpflash_recon_functions import gauss_window, triangle_window, pe_to_grid, test_pe_to_grid, reconstruct_phase_navigators, get_diffusion_forward_model
+from mpflash_recon_functions import PhaseNavWeightingType, EHEScalingType, EHbScalingType
+from shot_rejection import walsh_method, PhaseNavNormalizationType, PhaseNavPerVoxelNormalizationType, normalize_phasenav_weights
 from coil_compression import get_gcc_matrices_3d, apply_gcc_matrices, get_cc_matrix, apply_cc_matrix
 from respiratory_sorting import sort_respiratory_navigators
 from cfl import writecfl, readcfl
@@ -343,78 +344,15 @@ for vv in range(nv):
 print("Phase nav weights per respiratory phase %d took %.2f seconds" % (do_weights_per_respiratory_phase, time.time() - start))
 
 # +
-per_voxel_mean = lambda x: x / xp.mean(x, axis=-1, keepdims=True)
-per_voxel_max = lambda x: x / xp.max(x, axis=-1, keepdims=True)
-per_voxel_sos = lambda x: x / xp.sum(xp.abs(x)**2, axis=-1, keepdims=True)
-per_yz_slice_mean = lambda x: x / xp.mean(x, axis=(-3, -2, -1), keepdims=True)
-per_global_mean = lambda x: x / xp.mean(x, axis=(-4, -3, -2, -1), keepdims=True)
-
 if do_weights_per_respiratory_phase:
     phasenav_weighting_per_voxel_normalization = PhaseNavPerVoxelNormalizationType.PERCENTILE_PER_RESPIRATORY_PHASE
 else:
     phasenav_weighting_per_voxel_normalization = PhaseNavPerVoxelNormalizationType.MEAN_ACROSS_MAX_RESP_PHASE
 
 phasenav_weighting_normalization = PhaseNavNormalizationType.NOOP
-print("Phase nav weighting normalization %s per voxel %s" % (phasenav_weighting_normalization, phasenav_weighting_per_voxel_normalization))
 
-if phasenav_weighting_normalization != PhaseNavNormalizationType.NOOP:
-    # prenormalizing makes weighting functions easier to tune
-    im_phasenav_weightings_vxyzs = per_voxel_mean(xp.abs(im_phasenav_weightings_vxyzs))
-
-if phasenav_weighting_normalization == PhaseNavNormalizationType.NOOP:
-    pass
-elif phasenav_weighting_normalization == PhaseNavNormalizationType.SQUARE:
-    im_phasenav_weightings_vxyzs = xp.square(im_phasenav_weightings_vxyzs)
-elif phasenav_weighting_normalization == PhaseNavNormalizationType.SQRT:
-    im_phasenav_weightings_vxyzs = xp.sqrt(im_phasenav_weightings_vxyzs)
-elif phasenav_weighting_normalization == PhaseNavNormalizationType.EXP:
-    im_phasenav_weightings_std_vxyz_ = xp.std(im_phasenav_weightings_vxyzs, axis=-1, keepdims=True)
-    im_phasenav_weightings_std_vxyz_ = im_phasenav_weightings_std_vxyz_ / xp.mean(xp.ravel(im_phasenav_weightings_std_vxyz_))    
-    im_phasenav_weightings_vxyzs = xp.power(im_phasenav_weightings_vxyzs, im_phasenav_weightings_std_vxyz_)
-else:
-    assert False, "Invalid normalization type"
-
-if phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MEAN_ACROSS_ALL_RESP_PHASES:
-    im_phasenav_weightings_vxyzs = per_voxel_mean(xp.abs(im_phasenav_weightings_vxyzs))
-elif phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MEAN_PER_RESPIRATORY_PHASE or \
-    phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MAX_PER_RESPIRATORY_PHASE or \
-    phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.PERCENTILE_PER_RESPIRATORY_PHASE:
-    im_phasenav_weightings_vxyzrs = xp.abs(xp.reshape(im_phasenav_weightings_vxyzs[..., 0:(nr* ns_per_r)], (nv, nx, ny, nz, nr, ns_per_r)))
-
-    if phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MEAN_PER_RESPIRATORY_PHASE:
-        scaling_per_vxyzr_ = xp.mean(im_phasenav_weightings_vxyzrs, axis=-1, keepdims=True)
-    elif phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MAX_PER_RESPIRATORY_PHASE:
-        scaling_per_vxyzr_ = xp.max(im_phasenav_weightings_vxyzrs, axis=-1, keepdims=True)
-    elif phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.PERCENTILE_PER_RESPIRATORY_PHASE:
-        percentiles_per_r = xp.array([60, 60, 40, 20], dtype=np.float32) / 100 # 100 is use all weights for calculating mean
-            
-        samples_to_normalize_against_per_r = xp.floor(percentiles_per_r * ns_per_r)
-
-        sorted_phasenav_weightings_vxyzrs = xp.sort(im_phasenav_weightings_vxyzrs, axis=-1) # sorts ascending
-        sorted_phasenav_weightings_vxyzrs = xp.flip(sorted_phasenav_weightings_vxyzrs, axis=-1) # make descending
-
-        scaling_per_vxyzr_ = xp.ones((nv, nx, ny, nz, nr, 1))
-        for rr, slicer in enumerate(resp_phase_slicer):
-            scaling_per_vxyzr_[..., rr, :] = xp.mean(sorted_phasenav_weightings_vxyzrs[..., rr, 0:samples_to_normalize_against_per_r[rr]], axis=-1, keepdims=True)
-
-    scaling_per_vxyzs = xp.ones_like(im_phasenav_weightings_vxyzs)
-
-    for rr, slicer in enumerate(resp_phase_slicer):
-        scaling_per_vxyzs[..., slicer] = scaling_per_vxyzr_[..., rr, :]
-
-    im_phasenav_weightings_vxyzs = im_phasenav_weightings_vxyzs / scaling_per_vxyzs
-
-elif phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MEAN_ACROSS_FIRST_RESP_PHASE:
-    scaling = xp.mean(xp.abs(im_phasenav_weightings_vxyzs[..., 0:ns_per_r]), axis=-1, keepdims=True)
-    im_phasenav_weightings_vxyzs = im_phasenav_weightings_vxyzs / scaling 
-elif phasenav_weighting_per_voxel_normalization == PhaseNavPerVoxelNormalizationType.MEAN_ACROSS_MAX_RESP_PHASE:
-    im_phasenav_weightings_vxyzrs = xp.abs(xp.reshape(im_phasenav_weightings_vxyzs[..., 0:(nr* ns_per_r)], (nv, nx, ny, nz, nr, ns_per_r)))
-    scaling_per_vxyzr = xp.mean(im_phasenav_weightings_vxyzrs, axis=-1)
-    scaling_per_vxyz_ = xp.max(scaling_per_vxyzr, axis=-1, keepdims=True)
-    im_phasenav_weightings_vxyzs = im_phasenav_weightings_vxyzs / scaling_per_vxyz_
-else:
-    assert False, "Invalid normalization type"
-
+im_phasenav_weightings_vxyzs = normalize_phasenav_weights(im_phasenav_weightings_vxyzs, phasenav_weighting_normalization, phasenav_weighting_per_voxel_normalization,
+                                                          nv, nx, ny, nz, nr, ns_per_r, resp_phase_slicer)
 # -
 
 if is_jupyter:
@@ -569,7 +507,6 @@ for vv in range(nv_recon):
     im_adjoint_rxyz_ = xp.reshape(im_adjoint_vrxyz[vv, ...], (nr, nx, ny, nz, 1))  # add dummy dimension for coils
     
     if EHE_scaling_type == EHEScalingType.TRACE_EHE:
-        #fista_step_size = 1.0
         fista_step_size = 1 / xp.max(xp.ravel(max_eigenvalues_EHE_normalized_vx))
     else:
         fista_step_size = 0.8 / xp.max(max_eigenvalues_EHE_normalized_vx[vv, :])
