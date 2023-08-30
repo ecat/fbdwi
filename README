@@ -1,0 +1,33 @@
+
+
+1. Create docker container using provided Dockerfile. Most convenient is to use VSCode with DevContainers extensions
+2. Use jupytext to convert main.py to a notebook
+
+>> jupytext --to ipynb main.py
+
+3. Run the code and change the loaded data directory if desired
+
+
+
+./data/
+
+data_for_figure_6a/scan1 - free breathing Volunteer 1
+
+data_for_figure_6b/scan2 - free breathing Volunteer 2
+
+data_for_figure_7a/scan1 - respiratory triggered Volunteer 3, should change nr to 1, arms down so some ghost artifact
+data_for_figure_7a/scan2 - free breathing Volunteer 3
+
+data_for_figure_7b - data withheld
+
+data_for_figure_8/scan1 - exagerrated deep breathing
+data_for_figure_8/scan2 - normal breathing
+
+data_for_figure_9/scan1 - exagerrated deep breathing
+data_for_figure_9/scan2 - normal breathing
+
+data_for_figure_10/scan1 - rapid shallow breathing
+data_for_figure_10/scan2 - normal breathing
+
+
+
