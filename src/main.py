@@ -45,8 +45,8 @@ import pickle
 # %matplotlib widget
 
 # +
-data_folder = '../data/data_for_figure_8/'
-scan_str = 'scan1_'
+data_folder = '../data/data_for_figure_10/'
+scan_str = 'scan2_' # see README for descriptions of scans
 base_str = data_folder + scan_str
 
 ksp_vsxpec = readcfl(base_str + 'ksp_vsxpec')
@@ -79,7 +79,10 @@ print('nv', nv, 'ns', ns, 'nx', nx, 'npe', npe, 'nc', nc, 'ncc', ncc, 'ny', ny, 
     'ns_per_r', ns_per_r, 'ns_recon', ns_recon, 'etl_skips_start', sequence_opts["etl_skips_start"])
 
 # +
-gpu_device = sp.Device(0) # can change this to cpu if no gup available
+# the main recon loop uses about 14GB of GPU memory but this could be reduced by loading one volume at a time to gpu
+# this is okay since the volumes reconstruct independently
+# volume 0 is b=0 data, volume 1 is b=500 data, this entire recon could feasibly fit in a 8-12 GB GPU
+gpu_device = sp.Device(0) # can change this to cpu if no gpu available, will be 4-5x slower
 xp = gpu_device.xp
 print('Run reconstruction with', gpu_device)
 
@@ -152,7 +155,7 @@ if ny_respnav > 0:
         sorted_shot_indices, _ = sort_respiratory_navigators(sp.to_device(im_respnav_vsxyc[vv, :, :, :], gpu_device), True, (vv == (nv - 1)))
         sorted_shot_indices_v[vv] = sorted_shot_indices
 
-        # sort everything including respnavs again in place so that if we call this function again it stays sorted
+        # sort everything including respnavs again in place so that if we run this cell again it stays sorted
         im_vsx_ksp_pec[vv, ...] = im_vsx_ksp_pec[vv, sorted_shot_indices, ...]
         ksp_respnav_vsxyc[vv, ...] = ksp_respnav_vsxyc[vv, sorted_shot_indices, ...]
         shot_mask_vsyz[vv, ...] = shot_mask_vsyz[vv, sorted_shot_indices, ...]
@@ -221,9 +224,9 @@ if do_clear:
 do_cc_plot = True
 
 if do_cc_plot:
-    im_to_show = np.concatenate((im_naive_vxyz, im_naive_cc_vxyz), axis=2)
+    im_to_show = np.flip(np.concatenate((im_naive_vxyz, im_naive_cc_vxyz), axis=2), axis=1) # flip along axis 1 to flip readout
     plt.figure()
-    plt.imshow(im_to_show[0, :, :, 10], cmap='gray')
+    plt.imshow(cp.asnumpy(im_to_show[0, :, :, 12]), cmap='gray')
     plt.show()
     plt.figure()
     plt.imshow(np.angle(cp.asnumpy(im_naive_cc_vxyzc[0, :, :, 10, 0])), cmap='gray')
@@ -375,10 +378,10 @@ if is_clinic:
         vol_out_to_vol_in_table = [0, 1]
         phase_nav_weighting_types_v = [PhaseNavWeightingType.NONE, PhaseNavWeightingType.SENSE_LIKE]
 else:
-    do_wlsq_comparison = False
+    do_wlsq_comparison = False # use this if you want to see contrast changes, effect is most obvious in the figure 8 data at posterior
 
     if do_wlsq_comparison:
-        vol_out_to_vol_in_table = [0, 1, 1, 1, 1]
+        vol_out_to_vol_in_table = [0, 1, 1, 1, 1] # repeating 1 will do the dw reconstruction with different forward models
         phase_nav_weighting_types_v = [PhaseNavWeightingType.NONE, PhaseNavWeightingType.NONE, 
                                         PhaseNavWeightingType.SENSE_LIKE, PhaseNavWeightingType.WLSQ, PhaseNavWeightingType.WLSQ_DC]
     else:
@@ -410,7 +413,7 @@ oneH_EEH_one_vx = xp.zeros((nv_recon, nx), dtype=np.float32)
 trace_EHE_vx = xp.zeros((nv_recon, nx), dtype=np.float32)
 
 im_cg_vrxyz = xp.zeros_like(im_adjoint_vrxyz)
-cg_iters = 0 # cg always looks bad unless nr = 1 and b=0
+cg_iters = 0 # cg always looks bad unless nr = 1 
 
 im_fista_vrxyz = xp.zeros_like(im_adjoint_vrxyz)
 fista_iters = 100
@@ -566,12 +569,10 @@ for vv in range(nv_recon):
         if do_3d_wavelet:  
 
             def gradf(x):
-                EHEx_rxyz_ = xp.zeros_like(x)
-
-                # apply EHE per readout slice
-                for xx in range(nx):
-                    _, EHE = linear_operators_normalized_vx[vv][xx]
-                    EHEx_rxyz_[:, xx, np.newaxis, ...] = EHE * xp.reshape(x[:, xx, ...], EHb_shape_2d)
+                linear_operators_normalized_x = linear_operators_normalized_vx[vv]        
+                EHE_list_for_all_x = [linear_operators_normalized_x[xx][1] for xx in range(0, nx)] 
+                EHE_stacked = sp.linop.Diag(EHE_list_for_all_x, oaxis=1, iaxis=1) # this creates a linop that loops over readout for us, sigpy has everything and is amazing...    
+                EHEx_rxyz_ = EHE_stacked * x
 
                 return EHEx_rxyz_ - im_adjoint_rxyz_
 
